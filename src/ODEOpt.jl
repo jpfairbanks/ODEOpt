@@ -2,7 +2,8 @@ using Optim
 module ODEOpt
 using  ODE
 # package code goes here
-export Solution, Record, fgen, g, grav, extract, solutionplot, soserr, mid, obj, tprint
+export Solution, Record, fgen, g, grav, extract, solutionplot, soserr, mid, obj, tprint, solve45,
+       secondorder, solution, ivp 
 
 #define ODEs
 immutable Solution{T}
@@ -18,23 +19,26 @@ end
 """
 function fgen(β)
     function f(t,y)
-        return [y[2]; -β*y[1]]::Vector{Float64}
+        return [y[2]; -β*y[1]]
     end
     return f
 end
 f = fgen(1.0)
 
-# second order inhomogeneous system for 1d vibration
-# x'' + x' = f(t)
-# Let x' = v
-# v' + v = f(t)
-# v' = f(t) - v
-α=-1
-β=+2
+
+""" g(t,y)
+second order inhomogeneous system for 1d vibration
+x'' + x' = f(t)
+Let x' = v
+v' + v = f(t)
+v' = f(t) - v
+"""
 function g(t, y)
     #f(t) = t
+    α=-1
+    β=+2
     (x,v) = y
-    return [v;α*t-β*x]::Vector{Float64}
+    return [v;α*t-β*x]
 end
 
 β=1
@@ -113,12 +117,18 @@ which was measured on the domain time.
 - the result is the sum of squared errors.
 """
 function obj(f::Function, ystart::Vector{Float64}, time::Vector{Float64}, data)
-    tsolve, y = ode45(f, ystart, time)
+    tsolve, y = ode45(f, ystart, time, abstol=1e-16, reltol=1e-13, points=:specified)
     x, v = extract(y)
     #= @show norm(tsolve .- time) =#
     d² = soserr(tsolve, x, time, data)
     return tsolve, x, v, d²
 end
+
+function solve45(f::Function, ystart::Vector{Float64}, time)
+    return Solution(ode45(f, ystart, time)...)
+end
+
+include("secondorder.jl")
 
 using PyPlot
 
@@ -130,12 +140,15 @@ function solutionplot(time::Vector, x::Vector, v::Vector)
     plot(time, v, label="v")
     legend()
 end
+function solutionplot(sol::Solution)
+    return solutionplot(extract(sol)...)
+end
 
-type Record{T}
+type Record{T, R}
     β::T
     ystart::Vector{Float64}
     nsamples::Int
-    res
+    res::R
 end
 
 function measure(r::Record)
@@ -153,101 +166,4 @@ function tprint(io, r::Record)
 end
 
 end # module
-
-function noise(σ, n::Integer)
-    r = randn(n)
-    return σ*r
-end
-
-using Optim
-using ODE
-using ODEOpt
-using PyPlot
-using Base.Test
-
-# create time samples
-srand(0)
-tmin = 0.0
-tmax = 10
-ntimes = 400
-trange = linspace(tmin, tmax, ntimes)
-#initial position
-ystart = [0.0; 1.0]::Vector{Float64}
-β = 1.0
-βmin = 0.0
-βmax = 4.0
-
-σ = 0.1
-PLOT = true
-samplefactor = 2
-
-
-
-
-function simulate(β::Float64, sol::Solution, samples, PLOT::Bool)
-    t, x,v = extract(sol)
-    r = noise(σ, length(samples))
-    data = x[samples] .+  r
-    tdata = t[samples]
-    #= @show tdata[end] t[end] length(t) length(tdata) =#
-    # TODO: why are the samples missing the end of the domain ?
-    #       the samples IntRange is constructed from a different solution from sol.
-    # TODO: sample uniformly rather than at Runge Kutta points.
-    if PLOT
-        solutionplot(t, x,v)
-        plot(tdata, data, "o", label="data")
-        legend()
-    end
-
-    @show norm(σ*r)
-    z = soserr(t, x, tdata, data,)
-    #= @test_approx_eq_eps norm(σ*r) z 1e-8 =#
-
-    @show sqrt(soserr(t, x, tdata, data))
-    tsolve, xsolve, vsolve, d² = obj(f, ystart, tdata, data)
-    @show sqrt(d²)
-
-    γ(x) = obj(fgen(x), ystart, tdata, data)[end]
-    @show res = optimize(γ, βmin, βmax)
-
-    β⁺ = res.minimum
-    t⁺, y⁺ = ode45(fgen(β⁺), ystart, trange)
-    x⁺, v⁺ = extract(y⁺)
-    if PLOT
-        solutionplot(t⁺, x⁺, v⁺)
-    end
-
-    rec =  Record(β, ystart, length(samples),  res)
-    #= ODEOpt.tprint(STDOUT, rec) =#
-    return rec
-end
-
-recs = Record[]
-f = fgen(β)
-sol = Solution(ode45(f, ystart, trange)...)
-for samplefactor in [1,2,3,4,5,6,7,8,8,9,10]
-    samples = 1:samplefactor:length(trange)
-    #= @show samples length(trange) length(samples) length(trange[samples]) =#
-    r = simulate(β, sol, samples, false)
-    push!(recs, r)
-end
-
-println(STDOUT, "n\tβ\tβ⁺\terr\tfval")
-for (i,r) in enumerate(recs)
-    tprint(STDOUT, r)
-end
-
-samplefactor=1
-for β in float([1,2,3,4,5,6,7,8,8,9,10])
-    βmax = 4β
-    f = fgen(β)
-    sol = Solution(ode45(f, ystart, trange)...)
-    samples = 1:samplefactor:length(trange)
-    r = simulate(β, sol, samples, β==10?true:false)
-    push!(recs, r)
-end
-println(STDOUT, "n\tβ\tβ⁺\terr\tfval")
-for (i,r) in enumerate(recs)
-    tprint(STDOUT, r)
-end
 
